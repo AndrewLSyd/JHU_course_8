@@ -1,0 +1,293 @@
+---
+title: "Course 8 Assignment"
+author: "Andrew Lau"
+date: "7 October 2018"
+output:
+  html_document: default
+  pdf_document: default
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, cache=TRUE)
+```
+
+#Step 0 - Loading libraries
+```{r libraries}
+library(lattice)
+library(ggplot2)
+library(caret)
+library(ggplot2)
+library(RANN)
+library(e1071)
+```
+
+
+#Step 1 - Import data and pre-processing
+The first 7 columns are not useful for predicting and have thus been removed.
+```{r data import}
+setwd("C:/Users/AndreL01/Documents/JHU data science/Assignment")
+train <- read.csv("pml-training.csv")
+test <- read.csv("pml-testing.csv")
+
+#check structure of data
+# str(train)
+# str(test)
+
+#removing nonsensical predictors
+train$X <- NULL
+train$user_name <- NULL
+train$raw_timestamp_part_1 <- NULL
+train$raw_timestamp_part_2 <- NULL
+train$cvtd_timestamp <- NULL
+train$new_window <- NULL
+train$num_window <- NULL
+
+test$X <- NULL
+test$user_name <- NULL
+test$raw_timestamp_part_1 <- NULL
+test$raw_timestamp_part_2 <- NULL
+test$cvtd_timestamp <- NULL
+test$new_window <- NULL
+test$num_window <- NULL
+```
+
+#Step 2 - Exploratory Data Analysis and data pre-processing
+Data exploration is performed to get a better feel of what the data is and how
+it is structured.
+
+* Check distribution amongst classes
+* Check classes of each column
+* Convert predictors that are clearly meant to be numeric from factor to numeric
+* The classes of each column in the train and test set are different
+* remove factors with near zero variance
+
+```{r data pre-processing, warning=FALSE}
+trainPP <- train
+testPP <- test
+
+#split amongst classes
+barplot(table(trainPP$classe))
+
+#check each column's class
+# sapply(trainPP,class)
+# sapply(testPP,class)
+
+#there seems to be numeric saved as factors
+#converting factors with more than 25 levels to numeric
+for(i in names(trainPP)){
+    if(class(trainPP[[i]]) == "factor"){
+        if(length(levels(trainPP[[i]])) > 25){
+            trainPP[[i]] <- as.numeric(as.character(trainPP[[i]]))
+            testPP[[i]] <- as.numeric(as.character(testPP[[i]]))    
+        }
+    }
+}
+#make all classes in test same as train
+#test set has logical of all NA's, convert to numeric
+for(i in 1:dim(testPP)[2]){
+    if(class(testPP[,i]) == "logical" & all(is.na(testPP[,i]))){
+            testPP[,i] <- as.numeric(rep(NA,dim(testPP)[1]))
+    }
+}
+#convert all classes in test to match train
+for(i in 1:dim(trainPP)[2]){
+    if(class(trainPP[, i]) == "factor"){
+        testPP[, i] <- as.factor(testPP[, i])
+    }
+    else{
+        class(testPP[, i]) <- class(trainPP[, i])
+    }
+}
+
+#check classes in trainPP and testPP match
+# sapply(trainPP,class)
+# sapply(testPP,class)
+
+#removing near zero variance factors
+nzv <- nearZeroVar(trainPP)
+trainPP <- trainPP[, -nzv]
+testPP <- testPP[, -nzv]
+
+#final dimensions of the data
+dim(testPP)
+dim(trainPP)
+
+# str(trainPP
+#     , list.len = dim(trainPP)[2]
+#     )
+# str(testPP
+#     , list.len = dim(testPP)[2]
+#     )
+```
+
+#step 4 - Data Splitting
+Have split training dataset into a trainTrain and trainValid set.
+```{r data splitting}
+set.seed(1234)
+trainIndex <- createDataPartition(train$classe, p = .6, 
+                                  list = FALSE, 
+                                  times = 1)
+trainTrain <- train[ trainIndex,]
+trainValid  <- train[-trainIndex,]
+
+trainPPTrain <- trainPP[ trainIndex,]
+trainPPValid  <- trainPP[-trainIndex,]
+```
+
+#Step 5 - modelling
+6-fold cross-validation is used here to estimate the out-of-sample error. Introduction
+to Statistical Learning recommends between 6 and 10 folds.
+```{r fit control}
+fitControl <- trainControl(## 10-fold CV
+                           method = "repeatedcv"
+                           ,number = 6
+                           ## repeated ten times
+                           ,repeats = 1
+                            )
+```
+
+##Step 5a - LDA
+```{r lda, cache=TRUE}
+set.seed(825)
+
+ldaFit1 <- train(classe ~ ., data = trainPPTrain[,colSums(is.na(trainPPTrain))==0]
+                 ,method = "lda"
+                 ,trControl = fitControl
+                 ,na.action = na.pass
+                 )
+varImp(ldaFit1)
+#prediction on validation
+ldaPredict1_trainPPValid <- predict(ldaFit1, newdata = trainPPValid, na.action=na.pass)
+#prediction on test
+ldaPredict1_testPP <- predict(ldaFit1, newdata = testPP, na.action=na.pass)
+
+#accuracy on trainTrain
+ldaFit1
+#accuracy on trainValid
+confusionMatrix(data=ldaPredict1_trainPPValid,reference = trainPPValid$classe)$overall[1]
+```
+
+The LDA produces a model with an accuracy of about 70% on both the training and validation data sets.
+Cross-validation is providing a decent estimate of the validation error. LDA here is not the best model.
+
+##Step 5b - Decision Tree
+We begin by fitting a simple decision tree
+```{r decision tree, cache=TRUE}
+treeGrid <-  expand.grid(cp = seq(from=0.0000000000000000000000000000000000001, to=0.1, length.out = 10)
+                         )
+set.seed(78)
+treeFit1 <- train(classe ~ ., data = trainPPTrain
+                 ,method = "rpart"
+                 ,tuneGrid = treeGrid
+                 ,trControl = fitControl
+                 ,na.action = na.pass
+                 # ,preProcess = c("knnImpute")
+                 )
+#hyperparameters
+plot(treeFit1)
+#variable importance
+varImp(treeFit1)
+#prediction on validation
+treePredict1_trainPPValid <- predict(treeFit1, newdata = trainPPValid, na.action=na.pass)
+#prediction on test
+treePredict1_testPP <- predict(treeFit1, newdata = testPP, na.action=na.pass)
+
+#accuracy on trainTrain
+treeFit1
+#accuracy on trainValid
+confusionMatrix(data=treePredict1_trainPPValid,reference = trainPPValid$classe)$overall[1]
+```
+Decision trees give an accuracy of around 92% on both the training and validation set which is an improvement
+over the LDA model.
+
+##Step 5c - Random Forest
+Random forest can improve upon decision trees by bootstrapping and aggregating (bagging) many decision trees
+which decreases the varaince of predictions and hence overall error. N predictors are chosen at random with each
+decision tree to "decorrelate" the decision trees and hence reduce the variance further. Let's see how it performs
+versus the decision tree fit above.
+```{r random forest, cache=TRUE}
+rforestGrid <-  expand.grid(mtry = c(5,10,15,20,35)
+                         )
+
+set.seed(934)
+
+#random forest doesn't work with NA predictors, removed those columns
+rforestFit1 <- train(classe ~ ., data = trainPPTrain[,colSums(is.na(trainPPTrain))==0]
+                 ,method = "rf"
+                 ,tuneGrid = rforestGrid
+                 ,trControl = fitControl
+                 ,na.action = na.pass
+                 )
+#hyperparameters
+plot(rforestFit1)
+#variable importance
+varImp(rforestFit1)
+#prediction on validation
+rforestPredict1_trainPPValid <- predict(rforestFit1, newdata = trainPPValid, na.action=na.pass)
+#prediction on test
+rforestPredict1_testPP <- predict(rforestFit1, newdata = testPP, na.action=na.pass)
+
+#accuracy on trainTrain
+rforestFit1
+#accuracy on trainValid
+confusionMatrix(data=rforestPredict1_trainPPValid,reference = trainPPValid$classe)$overall[1]
+```
+We are getting accuracies of 99% on our training and validation test sets using the Random Forest. This is pretty good
+but let's throw a GBM at it and see how it runs.
+
+##5d GBM
+```{r gbm, cache=TRUE, results="hide", echo=TRUE}
+fitControl <- trainControl(## 10-fold CV
+                           method = "repeatedcv"
+                           ,number = 3
+                           ## repeated ten times
+                           ,repeats = 1
+                            )
+gbmGrid <-  expand.grid(interaction.depth = c(6,8), 
+                        n.trees = 2000, 
+                        shrinkage = 0.01,
+                        n.minobsinnode = c(ceiling(0.025*dim(train)[1]),ceiling(0.05*dim(train)[1])))
+
+set.seed(825)
+gbmFit1 <- train(classe ~ ., data = trainPPTrain
+                 ,method = "gbm"
+                 ,tuneGrid = gbmGrid
+                 ,trControl = fitControl
+                 ,bag.fraction = 0.7
+                 ,verbose = TRUE
+                 ,na.action = na.pass
+                 )
+
+```
+
+```{r gbm results, cache=TRUE}
+#hyperparameters
+plot(gbmFit1)
+#variable importance
+summary(gbmFit1)
+#prediction on validation
+gbmPredict1_trainPPValid <- predict(gbmFit1, newdata = trainPPValid, na.action=na.pass)
+#prediction on test
+gbmPredict1_testPP <- predict(gbmFit1, newdata = testPP, na.action=na.pass)
+
+#accuracy on trainTrain
+gbmFit1
+#accuracy on trainValid
+confusionMatrix(data=gbmPredict1_trainPPValid,reference = trainPPValid$classe)$overall[1]
+```
+We are getting training and validation set accuracies of 99.2-3%. This is similar to the accuracy gotten with
+the random forest model. This level of accuracy is probably good enough. The next thing to try would be stacking
+models together, but that is overkill.
+
+#Step 6 - results
+For our final model, we would go with the random forest. It's prediction accuracy is similar to the GBM and
+takes a lot longer to run.
+```{r results}
+data.frame("LDA" = ldaPredict1_testPP, "Decision Tree" = treePredict1_testPP
+           , "Random Forest" = rforestPredict1_testPP ,"GBM"=gbmPredict1_testPP)
+```
+
+
+
+
+
